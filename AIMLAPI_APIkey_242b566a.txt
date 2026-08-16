@@ -1,0 +1,3 @@
+{
+  "output": "I found two tables in the database: **employees** and **sales**.\n\n1. **employees** table:\n   - Contains columns: `id`, `name`, `department`, `role`, `salary`, and `hire_date`.\n   - Example rows include employees like Alice Smith (Manager in Sales) and Bob Johnson (Developer in Engineering).\n\n2. **sales** table:\n   - Contains columns: `id`, `employee_id`, `amount`, `region`, and `sale_date`.\n   - Example rows show sales made by employees, including amounts and regions.\n\nWhat specific information would you like to query from these tables?"
+}
