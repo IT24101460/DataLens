@@ -7,3 +7,9 @@ sqlalchemy
 python-dotenv
 langchain-google-genai
 langgraph
+python-multipart
+pandas
+openpyxl
+pymysql
+psycopg2-binary
+psycopg2-binary

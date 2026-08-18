@@ -9,7 +9,8 @@
   <!-- Tailwind CSS via CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    tailwindcss.config = {
+    window.tailwind = window.tailwind || {};
+    tailwind.config = {
       theme: {
         extend: {
           fontFamily: {
@@ -203,7 +204,7 @@
     }
 
     /* ─── Expandable Chat Widget ─────────────────────────── */
-    function ChatWidget({ onMaximize }) {
+    function ChatWidget({ onMaximize, autoQuery, setAutoQuery }) {
       const [messages, setMessages] = useState([]);
       const [input, setInput] = useState('');
       const [isLoading, setIsLoading] = useState(false);
@@ -217,6 +218,14 @@
           setTimeout(() => inputRef.current?.focus(), 100);
         }
       }, [messages, isLoading, isOpen]);
+
+      useEffect(() => {
+        if (autoQuery) {
+          setInput(autoQuery);
+          setIsOpen(true);
+          if (setAutoQuery) setAutoQuery('');
+        }
+      }, [autoQuery, setAutoQuery]);
 
       const sendMessage = async (e) => {
         e.preventDefault();
@@ -326,9 +335,978 @@
       );
     }
 
-    /* ─── Main App (HR Dashboard) ───────────────────────── */
+    /* ─── Chart Builder ──────────────────────────────────────── */
+    function ChartBuilder({ schema, activeTable }) {
+      const [selectedX, setSelectedX] = useState('');
+      const [selectedY, setSelectedY] = useState('');
+      const [aggregation, setAggregation] = useState('Count');
+      
+      const [chartType, setChartType] = useState('Auto');
+      const [colorTheme, setColorTheme] = useState('Default');
+      const [isGenerating, setIsGenerating] = useState(false);
+      const [chartContent, setChartContent] = useState(null);
+      const [error, setError] = useState(null);
+
+      React.useEffect(() => {
+        if (activeTable && schema && schema[activeTable]) {
+          setSelectedX(schema[activeTable][0] || '');
+          setSelectedY(schema[activeTable][1] || schema[activeTable][0] || '');
+        }
+      }, [activeTable, schema]);
+
+      const handleGenerate = async (e) => {
+        e.preventDefault();
+        if (!activeTable || isGenerating) return;
+        
+        setIsGenerating(true);
+        setError(null);
+        
+        let prompt = `Query the \`${activeTable}\` table. Group the data by \`${selectedX}\` for the x-axis categories.`;
+        if (aggregation === 'Count') {
+           prompt += ` Calculate the count of rows for the y-axis values.`;
+        } else if (aggregation === 'None') {
+           prompt += ` Use \`${selectedY}\` for the y-axis values without aggregation.`;
+        } else {
+           prompt += ` Calculate the ${aggregation} of \`${selectedY}\` for the y-axis values.`;
+        }
+        
+        if (chartType !== 'Auto') {
+          prompt += ` You MUST use a ${chartType}.`;
+        }
+        prompt += ' CRITICAL: You MUST LIMIT your output to a maximum of 15 data points. If the x-axis represents dates or times, DO NOT just return the top 15 dates. You MUST aggregate and group the data temporally (e.g., by month or year) and order it chronologically so it represents the full timeline within the 15 data point limit! Do NOT output more than 15 items in the x-axis or y-axis arrays, otherwise the chart will crash! Do not include a theme init block or multiple colors in your prompt, I will handle colors. Just return the valid markdown code block.';
+
+        try {
+          const response = await fetch('/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_message: prompt }),
+          });
+
+          if (!response.ok) throw new Error(`Server error: ${response.status}`);
+          
+          const data = await response.json();
+          let aiResponse = data.reply || '';
+          
+          // Extract mermaid block
+          const mermaidMatch = aiResponse.match(/```mermaid\n([\s\S]*?)```/);
+          if (mermaidMatch) {
+            let chartCode = mermaidMatch[1];
+            
+            // Inject color theme if not Default
+            if (colorTheme !== 'Default') {
+               const colorMap = {
+                 'Indigo': '#6366f1',
+                 'Emerald': '#10b981',
+                 'Rose': '#f43f5e',
+                 'Amber': '#f59e0b'
+               };
+               const hex = colorMap[colorTheme];
+               const isPie = chartCode.trim().startsWith('pie');
+               
+               if (isPie) {
+                 chartCode = `%%{init: {'themeVariables': { 'pie1': '${hex}', 'pie2': '${hex}80', 'pie3': '${hex}40', 'pie4': '${hex}aa', 'pie5': '${hex}60', 'pieStrokeColor': 'rgba(255,255,255,0.1)' }}}%%\n` + chartCode;
+               } else {
+                 chartCode = `%%{init: {'themeVariables': { 'xyChart': { 'plotColorPalette': '${hex}' }}}}%%\n` + chartCode;
+               }
+            }
+            
+            setChartContent(chartCode);
+            setTimeout(() => {
+              try {
+                mermaid.run();
+              } catch(e) {
+                console.error("Mermaid run error:", e);
+              }
+            }, 100);
+          } else {
+             setError("AI did not return a chart. Response: " + aiResponse);
+          }
+          
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setIsGenerating(false);
+        }
+      };
+
+      const handleDownload = () => {
+        const svgEl = document.querySelector('.mermaid svg');
+        if (!svgEl) {
+          alert('Chart is still rendering. Please wait a moment.');
+          return;
+        }
+        const svgData = new XMLSerializer().serializeToString(svgEl);
+        const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const safeTopic = `${activeTable}_${selectedX}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        a.download = `datalens_chart_${safeTopic || 'download'}.svg`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      };
+
+      const handleDownloadPNG = () => {
+        const svgEl = document.querySelector('.mermaid svg');
+        if (!svgEl) {
+          alert('Chart is still rendering. Please wait a moment.');
+          return;
+        }
+        const svgData = new XMLSerializer().serializeToString(svgEl);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+
+        img.onload = () => {
+          // Add some padding and a dark background to match the dashboard
+          canvas.width = img.width + 40;
+          canvas.height = img.height + 40;
+          ctx.fillStyle = '#0f172a'; // Tailwind slate-900 / gray-950
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 20, 20);
+          
+          const pngUrl = canvas.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = pngUrl;
+          const safeTopic = `${activeTable}_${selectedX}`.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+          a.download = `datalens_chart_${safeTopic || 'download'}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      };
+
+      if (chartContent) {
+        return (
+          <div className="glass rounded-2xl p-6 border border-white/5 shadow-xl w-full flex flex-col relative animate-fade-in-up">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-gray-100">{aggregation === 'Count' ? `Count by ${selectedX}` : `${aggregation} of ${selectedY} by ${selectedX}`}</h3>
+                <p className="text-xs text-gray-400 uppercase tracking-wider mt-1">Table: {activeTable} • {chartType} • {colorTheme}</p>
+              </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleDownloadPNG}
+                  className="text-xs font-semibold px-4 py-2 bg-indigo-500 hover:bg-indigo-400 rounded-lg text-white transition-colors flex items-center gap-1.5"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                  PNG
+                </button>
+                <button 
+                  onClick={handleDownload}
+                  className="text-xs font-semibold px-4 py-2 bg-purple-500 hover:bg-purple-400 rounded-lg text-white transition-colors flex items-center gap-1.5"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                  SVG
+                </button>
+                <button 
+                  onClick={() => setChartContent(null)}
+                  className="text-xs font-semibold px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors flex items-center gap-1.5"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                  Adjust Settings
+                </button>
+              </div>
+            </div>
+            <div className="w-full overflow-x-auto mermaid text-center flex justify-center py-4 bg-gray-900/40 rounded-xl border border-white/5 shadow-inner">
+              {chartContent}
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="glass rounded-2xl p-6 md:p-8 border border-white/5 shadow-xl w-full animate-fade-in-up">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-100">Custom Chart Builder</h2>
+              <p className="text-sm text-gray-400">Generate a specific chart instantly using the DataLens AI.</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleGenerate} className="space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Group By (X-Axis)</label>
+                <select 
+                  value={selectedX}
+                  onChange={e => setSelectedX(e.target.value)}
+                  disabled={!activeTable}
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-gray-100 focus:outline-none focus:border-indigo-500/50 transition-colors appearance-none cursor-pointer disabled:opacity-50"
+                >
+                  {(schema[activeTable] || []).map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+                <div className="absolute right-4 top-10 text-gray-500 pointer-events-none">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+              </div>
+
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Aggregation</label>
+                <select 
+                  value={aggregation}
+                  onChange={e => setAggregation(e.target.value)}
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-gray-100 focus:outline-none focus:border-indigo-500/50 transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="Count">Count</option>
+                  <option value="Sum">Sum</option>
+                  <option value="Average">Average</option>
+                  <option value="None">None (Raw Data)</option>
+                </select>
+                <div className="absolute right-4 top-10 text-gray-500 pointer-events-none">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+              </div>
+
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-300 mb-1.5 text-nowrap text-ellipsis overflow-hidden">Value (Y-Axis)</label>
+                <select 
+                  value={selectedY}
+                  onChange={e => setSelectedY(e.target.value)}
+                  disabled={!activeTable || aggregation === 'Count'}
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-gray-100 focus:outline-none focus:border-indigo-500/50 transition-colors appearance-none cursor-pointer disabled:opacity-50"
+                >
+                  {(schema[activeTable] || []).map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+                <div className="absolute right-4 top-10 text-gray-500 pointer-events-none">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Chart Type</label>
+                <select 
+                  value={chartType}
+                  onChange={e => setChartType(e.target.value)}
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-gray-100 focus:outline-none focus:border-indigo-500/50 transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="Auto">Auto (Let AI decide)</option>
+                  <option value="Bar Chart">Bar Chart</option>
+                  <option value="Line Chart">Line Chart</option>
+                  <option value="Pie Chart">Pie Chart</option>
+                </select>
+                <div className="absolute right-4 top-10 text-gray-500 pointer-events-none">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+              </div>
+              
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Color Theme</label>
+                <select 
+                  value={colorTheme}
+                  onChange={e => setColorTheme(e.target.value)}
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-gray-100 focus:outline-none focus:border-indigo-500/50 transition-colors appearance-none cursor-pointer"
+                >
+                  <option value="Default">Default</option>
+                  <option value="Indigo">Indigo</option>
+                  <option value="Emerald">Emerald</option>
+                  <option value="Rose">Rose</option>
+                  <option value="Amber">Amber</option>
+                </select>
+                <div className="absolute right-4 top-10 text-gray-500 pointer-events-none">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </div>
+              </div>
+            </div>
+
+            {error && (
+              <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm">
+                {error}
+              </div>
+            )}
+
+            <div className="pt-2">
+              <button 
+                type="submit"
+                disabled={isGenerating || !activeTable}
+                className="w-full md:w-auto px-6 py-3 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:hover:bg-indigo-500 text-white font-medium rounded-xl transition-colors flex items-center justify-center gap-2"
+              >
+                {isGenerating ? (
+                  <>
+                    <svg className="w-5 h-5 animate-spin text-indigo-200" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                    Generate Chart
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    /* ─── Login Screen ──────────────────────────────────────── */
+    function LoginScreen({ onLogin }) {
+      const [isLoading, setIsLoading] = useState(false);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        setTimeout(() => {
+          setIsLoading(false);
+          onLogin();
+        }, 1000);
+      };
+
+      return (
+        <div className="min-h-full flex items-center justify-center bg-gray-950 p-4 relative overflow-hidden">
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+          
+          <div className="glass w-full max-w-md rounded-3xl p-8 border border-white/10 shadow-2xl relative z-10 animate-fade-in-up">
+            <div className="flex justify-center mb-6">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+              </div>
+            </div>
+            <h2 className="text-2xl font-bold text-center text-white mb-2">Welcome to DataLens</h2>
+            <p className="text-gray-400 text-center mb-8 text-sm">Sign in to your HR admin account</p>
+            
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Work Email</label>
+                <input 
+                  type="email" 
+                  required
+                  defaultValue="hr.admin@company.com"
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500/50 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Password</label>
+                <input 
+                  type="password" 
+                  required
+                  defaultValue="password123"
+                  className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500/50 transition-colors"
+                />
+              </div>
+              <button 
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-3 bg-indigo-500 hover:bg-indigo-400 text-white font-semibold rounded-xl transition-colors mt-2 flex justify-center items-center h-12"
+              >
+                {isLoading ? (
+                  <svg className="w-5 h-5 animate-spin text-white" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                ) : (
+                  "Sign In to DataLens"
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    function IngestionHub({ onComplete, onClose }) {
+      const [validating, setValidating] = useState(null); 
+      const [dbUrl, setDbUrl] = useState('');
+      const [error, setError] = useState(null);
+      const fileInputRef = useRef(null);
+
+      const handleConnectDB = async () => {
+        if (!dbUrl) return;
+        setValidating('db');
+        setError(null);
+        try {
+          const res = await fetch('/api/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ db_url: dbUrl })
+          });
+          const data = await res.json();
+          if (res.ok) {
+            onComplete();
+          } else {
+            setError(data.detail || 'Connection failed');
+            setValidating(null);
+          }
+        } catch (err) {
+          setError(err.message);
+          setValidating(null);
+        }
+      };
+
+      const handleFileUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setValidating('file');
+        setError(null);
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        try {
+          const res = await fetch('/api/upload', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          if (res.ok) {
+            onComplete();
+          } else {
+            setError(data.detail || 'Upload failed');
+            setValidating(null);
+          }
+        } catch (err) {
+          setError(err.message);
+          setValidating(null);
+        }
+      };
+
+      const handleSheets = () => {
+        setValidating('sheets');
+        setTimeout(() => {
+          onComplete(); // Still simulated
+        }, 1500);
+      };
+
+      return (
+        <div className="min-h-full bg-gray-950 p-6 md:p-12 text-white relative">
+          <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-purple-600/10 rounded-full blur-[100px] pointer-events-none"></div>
+
+          <div className="max-w-6xl mx-auto relative z-10 animate-fade-in-up mt-8 md:mt-16">
+            <div className="flex justify-between items-start mb-12">
+              <div className="text-center md:text-left">
+                <h1 className="text-3xl font-bold mb-3">Welcome back, HR Admin. Let's connect your data.</h1>
+                <p className="text-gray-400 text-lg">Choose a data source to sync with your Analytics Dashboard.</p>
+              </div>
+              {onClose && (
+                <button 
+                  onClick={onClose}
+                  className="p-2 text-gray-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-colors"
+                  title="Close"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              <div className="glass rounded-2xl p-8 border border-white/5 flex flex-col h-full hover:border-indigo-500/30 transition-colors">
+                <div className="w-12 h-12 rounded-xl bg-blue-500/20 flex items-center justify-center text-blue-400 mb-6">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" /></svg>
+                </div>
+                <h3 className="text-xl font-bold mb-2">Database Connection</h3>
+                <p className="text-sm text-gray-400 mb-6 flex-1">Connect directly to your production PostgreSQL or MySQL instance.</p>
+                <div className="space-y-3">
+                  <input type="text" value={dbUrl} onChange={e => setDbUrl(e.target.value)} placeholder="postgresql://user:pass@host/db" className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500/50" />
+                  <button onClick={handleConnectDB} disabled={!!validating || !dbUrl} className="w-full py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-sm font-semibold transition-colors flex items-center justify-center disabled:opacity-50">
+                    {validating === 'db' ? 'Connecting...' : 'Connect'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="glass rounded-2xl p-8 border border-white/5 flex flex-col h-full hover:border-green-500/30 transition-colors">
+                <div className="w-12 h-12 rounded-xl bg-green-500/20 flex items-center justify-center text-green-400 mb-6">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                </div>
+                <h3 className="text-xl font-bold mb-2">Cloud Spreadsheet</h3>
+                <p className="text-sm text-gray-400 mb-6 flex-1">Sync a Google Sheet or Office 365 workbook via sharing link.</p>
+                <div className="space-y-3">
+                  <input type="text" placeholder="https://docs.google.com/spreadsheets/..." className="w-full bg-gray-900/50 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500/50" />
+                  <button onClick={handleSheets} disabled={!!validating} className="w-full py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-sm font-semibold transition-colors flex items-center justify-center disabled:opacity-50">
+                    {validating === 'sheets' ? 'Validating Schema...' : 'Sync'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="glass rounded-2xl p-8 border border-white/5 flex flex-col h-full hover:border-purple-500/30 transition-colors">
+                <div className="w-12 h-12 rounded-xl bg-purple-500/20 flex items-center justify-center text-purple-400 mb-6">
+                  <svg className="w-6 h-6" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                </div>
+                <h3 className="text-xl font-bold mb-2">Local File Upload</h3>
+                <p className="text-sm text-gray-400 mb-6 flex-1">Upload a static .csv or .xlsx export from your HRIS.</p>
+                
+                <input type="file" ref={fileInputRef} className="hidden" accept=".csv,.xlsx" onChange={handleFileUpload} />
+                <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-white/10 rounded-xl p-6 flex flex-col items-center justify-center text-center cursor-pointer hover:border-indigo-500/50 hover:bg-white/[0.02] transition-colors mb-3">
+                  <svg className="w-8 h-8 text-gray-500 mb-2" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                  <p className="text-sm font-medium text-gray-300">Drag & drop files here</p>
+                  <p className="text-xs text-gray-500 mt-1">or click to browse</p>
+                </div>
+                <button onClick={() => fileInputRef.current?.click()} disabled={!!validating} className="w-full py-2.5 bg-indigo-500 hover:bg-indigo-400 text-white rounded-xl text-sm font-semibold transition-colors flex items-center justify-center disabled:opacity-50">
+                  {validating === 'file' ? 'Uploading...' : 'Browse Computer'}
+                </button>
+              </div>
+
+            </div>
+            
+            {error && (
+              <div className="mt-8 p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm text-center max-w-2xl mx-auto">
+                <span className="font-bold">Connection Error:</span> {error}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Executive Intelligence Banner ──────────────────────────────────────── */
+    function ExecutiveIntelligenceBanner({ analysis, onQueryClick }) {
+      if (!analysis) return null;
+
+      const score = analysis.data_quality_score || 0;
+      let scoreColor = 'text-green-400';
+      let scoreBg = 'bg-green-400/20';
+      let scoreDot = 'bg-green-400';
+      
+      if (score < 70) {
+        scoreColor = 'text-red-400';
+        scoreBg = 'bg-red-400/20';
+        scoreDot = 'bg-red-400';
+      } else if (score < 90) {
+        scoreColor = 'text-yellow-400';
+        scoreBg = 'bg-yellow-400/20';
+        scoreDot = 'bg-yellow-400';
+      }
+
+      return (
+        <div className="mb-8 w-full animate-fade-in-up">
+          <div className="glass rounded-3xl p-6 md:p-8 border border-white/10 shadow-2xl overflow-hidden relative">
+            <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-[80px] pointer-events-none"></div>
+            
+            <div className="flex flex-col md:flex-row gap-8 relative z-10">
+              
+              {/* Left Column: Data Quality & Hygiene */}
+              <div className="md:w-1/3 flex flex-col gap-6">
+                <div>
+                  <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                    <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    AI Data Health
+                  </h2>
+                  <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border border-white/5 ${scoreBg}`}>
+                    <div className={`w-2.5 h-2.5 rounded-full animate-pulse ${scoreDot}`}></div>
+                    <span className={`font-bold ${scoreColor}`}>{score}% Data Quality Score</span>
+                  </div>
+                </div>
+
+                <div className="bg-gray-900/50 rounded-xl p-5 border border-white/5">
+                  <h3 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">Hygiene Findings</h3>
+                  <ul className="space-y-2">
+                    {(analysis.hygiene_notes || []).map((note, idx) => (
+                      <li key={idx} className="flex items-start gap-2 text-sm text-gray-400">
+                        <svg className="w-4 h-4 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                        {note}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+              {/* Right Column: Key Insights & Queries */}
+              <div className="md:w-2/3 flex flex-col gap-6">
+                <div>
+                  <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                    <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                    Executive Takeaways
+                  </h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {(analysis.key_insights || []).map((insight, idx) => (
+                      <div key={idx} className="bg-gradient-to-br from-indigo-500/10 to-purple-600/10 border border-indigo-500/20 rounded-xl p-4 hover:border-indigo-500/40 transition-colors">
+                        <p className="text-sm text-gray-200 leading-relaxed">{insight}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">Suggested Explorations</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {(analysis.suggested_queries || []).map((query, idx) => (
+                      <button 
+                        key={idx}
+                        onClick={() => onQueryClick(query)}
+                        className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-xs font-medium text-indigo-300 hover:text-indigo-200 transition-colors text-left"
+                      >
+                        {query}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Documentation Screen ────────────────────────────────────────────────── */
+    function DocumentationScreen({ onNavigateBack }) {
+      const [activeSection, setActiveSection] = useState('getting-started');
+
+      const navItems = [
+        { id: 'getting-started', label: 'Getting Started' },
+        { id: 'connecting-data', label: 'Connecting Data' },
+        { id: 'executive-insights', label: 'Executive Insights' },
+        { id: 'ai-chat', label: 'AI Chat Interface' },
+        { id: 'chart-builder', label: 'Chart Builder' }
+      ];
+
+      return (
+        <div className="flex flex-col h-screen text-gray-200 selection:bg-indigo-500/30 selection:text-white bg-[#0f1117] font-sans overflow-hidden">
+          
+          {/* Top Announcement Banner */}
+          <div className="bg-[#0070f3] text-white text-xs font-medium py-2 px-4 flex items-center justify-center gap-2">
+            <span>DataLens 2.0 is coming soon. Join the engineers and teams shaping the future of AI analytics.</span>
+            <a href="#" className="underline font-bold hover:text-white/80 transition-colors">Get early access →</a>
+          </div>
+
+          {/* Docs Header */}
+          <header className="flex-none px-6 py-3 border-b border-white/10 bg-[#0f1117] flex items-center justify-between shadow-sm z-20">
+            <div className="flex items-center gap-8">
+              <button onClick={onNavigateBack} className="flex items-center gap-2 group">
+                <svg className="w-5 h-5 text-indigo-400 group-hover:scale-110 transition-transform" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 12h3v8h6v-6h2v6h6v-8h3L12 2z"/></svg>
+                <span className="text-lg font-bold tracking-tight text-white flex items-center gap-1.5">
+                  DataLens <span className="text-indigo-400 font-normal">Docs</span>
+                </span>
+              </button>
+              
+              <div className="hidden md:flex items-center text-sm font-medium text-gray-400 gap-1 hover:text-gray-200 cursor-pointer transition-colors">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>
+                Home
+                <svg className="w-3 h-3 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="hidden sm:flex items-center bg-gray-900 border border-white/10 rounded-full px-4 py-1.5 w-64 text-sm text-gray-500">
+                <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                Search...
+                <span className="ml-auto text-xs bg-gray-800 border border-white/5 px-1.5 py-0.5 rounded text-gray-400">Ctrl K</span>
+              </div>
+              
+              <button className="hidden sm:flex items-center gap-2 text-sm font-medium text-gray-300 hover:text-white transition-colors bg-white/5 hover:bg-white/10 px-3 py-1.5 rounded-lg border border-white/10">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                Ask AI
+              </button>
+              
+              <a href="#" className="hidden sm:flex items-center gap-2 text-sm font-medium text-gray-300 hover:text-white transition-colors">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/></svg>
+                GitHub
+              </a>
+
+              <button className="bg-[#0070f3] hover:bg-[#0060df] text-white text-sm font-semibold px-4 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-lg shadow-blue-500/20">
+                Try DataLens Pro
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+              </button>
+            </div>
+          </header>
+
+          <div className="flex flex-1 overflow-hidden">
+            
+            {/* Left Sidebar */}
+            <aside className="w-64 border-r border-white/10 bg-[#0f1117] overflow-y-auto hidden md:block">
+              <div className="p-6">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">Documentation</h4>
+                <nav className="space-y-1">
+                  {navItems.map(item => (
+                    <button 
+                      key={item.id}
+                      onClick={() => setActiveSection(item.id)}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                        activeSection === item.id 
+                          ? 'bg-indigo-500/10 text-indigo-400 font-medium' 
+                          : 'text-gray-400 hover:bg-white/5 hover:text-gray-200'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </nav>
+              </div>
+            </aside>
+
+            {/* Main Content Area */}
+            <main className="flex-1 overflow-y-auto bg-[#0a0a0c] relative">
+              
+              <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-[120px] pointer-events-none"></div>
+
+              <div className="max-w-3xl mx-auto py-12 px-8 relative z-10 animate-fade-in-up">
+                
+                {activeSection === 'getting-started' && (
+                  <div className="space-y-8 animate-fade-in-up">
+                    <h1 className="text-4xl font-extrabold text-white tracking-tight">Getting Started with DataLens</h1>
+                    <p className="text-lg text-gray-400 leading-relaxed">
+                      Welcome to DataLens! DataLens is your AI-powered executive analytics platform. It is designed to help business leaders, HR professionals, and managers instantly analyze datasets, generate charts, and get automated business insights without writing a single line of code.
+                    </p>
+                    
+                    <div className="bg-[#11131a] rounded-xl border border-white/10 p-6 overflow-hidden relative">
+                      <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                      <h3 className="text-xl font-bold text-white mb-2">How it works</h3>
+                      <p className="text-sm text-gray-300 mt-4 leading-relaxed">
+                        DataLens acts as your personal data scientist. You simply provide your data, and the platform automatically calculates data health scores, finds outliers, and suggests the most important business takeaways. From there, you can use plain English to ask questions and generate stunning visual charts.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {activeSection === 'connecting-data' && (
+                  <div className="space-y-8 animate-fade-in-up">
+                    <h1 className="text-4xl font-extrabold text-white tracking-tight">Connecting Data</h1>
+                    <p className="text-lg text-gray-400 leading-relaxed">
+                      Before you can get insights, you need to bring your data into DataLens.
+                    </p>
+                    <h2 className="text-2xl font-bold text-gray-100 border-b border-white/10 pb-2 mt-8">Upload Options</h2>
+                    <ul className="list-disc pl-5 text-gray-300 space-y-4 text-sm mt-4">
+                      <li><strong>Local File Upload:</strong> You can directly upload <code>.csv</code> or <code>.xlsx</code> files exported from your CRM, HRIS, or any other software. Simply click "Connect Data" in the header and drag and drop your file.</li>
+                      <li><strong>Database Connection:</strong> For live data, you can provide a direct PostgreSQL connection string (coming soon).</li>
+                      <li><strong>Cloud Spreadsheet:</strong> Paste a link to a Google Sheet to automatically sync its rows (coming soon).</li>
+                    </ul>
+                  </div>
+                )}
+
+                {activeSection === 'executive-insights' && (
+                  <div className="space-y-8 animate-fade-in-up">
+                    <h1 className="text-4xl font-extrabold text-white tracking-tight">Executive Insights</h1>
+                    <p className="text-lg text-gray-400 leading-relaxed">
+                      The moment you select a dataset, DataLens analyzes it from top to bottom.
+                    </p>
+                    <div className="bg-gradient-to-br from-indigo-500/10 to-purple-600/10 border border-indigo-500/20 rounded-xl p-6 mt-6">
+                      <h3 className="text-lg font-bold text-white mb-2">What you get automatically:</h3>
+                      <ul className="space-y-3 mt-4 text-sm text-gray-300">
+                        <li className="flex gap-2"><span className="text-indigo-400">✅</span> <strong>Data Health Score:</strong> Evaluates missing cells and anomalies.</li>
+                        <li className="flex gap-2"><span className="text-indigo-400">✅</span> <strong>Hygiene Findings:</strong> Lists specific columns with outliers or issues.</li>
+                        <li className="flex gap-2"><span className="text-indigo-400">✅</span> <strong>Top Indicators:</strong> 4 high-level KPIs generated just for your dataset (e.g. Total Revenue, Average Salary).</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {activeSection === 'ai-chat' && (
+                  <div className="space-y-8 animate-fade-in-up">
+                    <h1 className="text-4xl font-extrabold text-white tracking-tight">AI Chat Interface</h1>
+                    <p className="text-lg text-gray-400 leading-relaxed">
+                      Located in the bottom right corner of your dashboard is the floating DataLens AI Chat Widget.
+                    </p>
+                    <h2 className="text-2xl font-bold text-gray-100 border-b border-white/10 pb-2 mt-8">Using the Chat</h2>
+                    <p className="text-sm text-gray-300 leading-relaxed">
+                      You can ask the AI literally anything about your data. For example:
+                    </p>
+                    <div className="bg-[#1a1d24] rounded-xl border border-white/10 p-4 font-mono text-sm text-indigo-300">
+                      "What is the average salary by department?"<br/><br/>
+                      "Which employee was hired most recently?"<br/><br/>
+                      "Show me a pie chart of sales by region."
+                    </div>
+                  </div>
+                )}
+
+                {activeSection === 'chart-builder' && (
+                  <div className="space-y-8 animate-fade-in-up">
+                    <h1 className="text-4xl font-extrabold text-white tracking-tight">Custom Chart Builder</h1>
+                    <p className="text-lg text-gray-400 leading-relaxed">
+                      Need a specific chart instantly? Scroll down to the bottom of the dashboard to find the Custom Chart Builder.
+                    </p>
+                    <ul className="list-disc pl-5 text-gray-300 space-y-4 text-sm mt-6">
+                      <li><strong>Group By (X-Axis):</strong> Select the category you want to group your data by (e.g., Department, Region).</li>
+                      <li><strong>Value (Y-Axis):</strong> Select the numeric column you want to measure (e.g., Salary, Revenue).</li>
+                      <li><strong>Aggregation:</strong> Choose how to combine the numbers (Sum, Average, Count).</li>
+                      <li><strong>Chart Type:</strong> Choose between Bar, Line, Pie, or let the AI automatically decide what looks best.</li>
+                    </ul>
+                  </div>
+                )}
+
+                <div className="mt-20 pt-8 border-t border-white/10 flex justify-between items-center text-sm text-gray-500">
+                  <p>Was this helpful?</p>
+                  <div className="flex gap-2">
+                    <button className="hover:text-gray-300 transition-colors">Yes</button>
+                    <span>·</span>
+                    <button className="hover:text-gray-300 transition-colors">No</button>
+                  </div>
+                </div>
+
+              </div>
+              <Footer />
+            </main>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─── Global Footer ──────────────────────────────────────────────────────── */
+    function Footer() {
+      return (
+        <footer className="w-full bg-[#0a0a0c] border-t border-white/5 pt-16 pb-8 mt-auto z-10 relative">
+          <div className="max-w-7xl mx-auto px-6 md:px-10">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-12">
+              
+              <div className="md:col-span-1">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-500/20 flex items-center justify-center border border-indigo-500/30">
+                    <svg className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                  </div>
+                  <span className="text-xl font-bold text-white tracking-tight">DataLens</span>
+                </div>
+                <p className="text-sm text-gray-500 leading-relaxed">
+                  The AI-powered executive analytics platform. Ask questions in plain English, generate charts, and get automated business insights without writing a single line of code.
+                </p>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-bold text-gray-200 mb-5">Core Stack</h3>
+                <ul className="space-y-3 text-sm text-gray-500">
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">React 18</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">FastAPI</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">SQLite (In-Memory)</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">Pandas</a></li>
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-bold text-gray-200 mb-5">AI & Visualization</h3>
+                <ul className="space-y-3 text-sm text-gray-500">
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">OpenAI GPT-4o-mini</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">LangGraph & LangChain</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">Recharts</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">Mermaid.js</a></li>
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="text-sm font-bold text-gray-200 mb-5">Design System</h3>
+                <ul className="space-y-3 text-sm text-gray-500">
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">Tailwind CSS</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">Heroicons</a></li>
+                  <li><a href="#" className="hover:text-indigo-400 transition-colors">Glassmorphism UI</a></li>
+                </ul>
+              </div>
+
+            </div>
+            
+            <div className="flex flex-col md:flex-row items-center justify-between pt-8 border-t border-white/5 text-xs text-gray-600">
+              <p>© {new Date().getFullYear()} DataLens Inc. All rights reserved.</p>
+              <div className="flex space-x-6 mt-4 md:mt-0">
+                <a href="#" className="hover:text-gray-400 transition-colors">Privacy Policy</a>
+                <a href="#" className="hover:text-gray-400 transition-colors">Terms of Service</a>
+                <a href="https://github.com/nayan/DataLens" target="_blank" rel="noreferrer" className="hover:text-gray-400 transition-colors flex items-center gap-1">
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd"/></svg>
+                  GitHub
+                </a>
+              </div>
+            </div>
+          </div>
+        </footer>
+      );
+    }
+
     function App() {
+      const [currentScreen, setCurrentScreen] = useState('login');
       const [modalContent, setModalContent] = useState(null);
+      const [dashboardStats, setDashboardStats] = useState([]);
+      const [isLoadingStats, setIsLoadingStats] = useState(false);
+      const [activeTable, setActiveTable] = useState('');
+      const [schema, setSchema] = useState({});
+      const [isLoadingSchema, setIsLoadingSchema] = useState(true);
+      const [showDataModal, setShowDataModal] = useState(false);
+      
+      // New states for Executive Banner
+      const [datasetAnalysis, setDatasetAnalysis] = useState(null);
+      const [isAnalyzing, setIsAnalyzing] = useState(false);
+      const [chatAutoQuery, setChatAutoQuery] = useState('');
+
+      const fetchSchema = React.useCallback(() => {
+        setIsLoadingSchema(true);
+        fetch('/api/schema')
+          .then(res => res.json())
+          .then(data => {
+            setSchema(data);
+            const tables = Object.keys(data);
+            if (tables.length > 0) {
+              if (!activeTable || !tables.includes(activeTable)) {
+                setActiveTable(tables[0]);
+              }
+            } else {
+              setActiveTable('');
+            }
+          })
+          .catch(err => console.error('Failed to load schema:', err))
+          .finally(() => setIsLoadingSchema(false));
+      }, [activeTable]);
+
+      const fetchInsights = React.useCallback((table = activeTable) => {
+        if (currentScreen !== 'dashboard') return;
+        setIsLoadingStats(true);
+        const url = table ? `/api/insights?table=${table}` : '/api/insights';
+        fetch(url)
+          .then(res => res.json())
+          .then(data => {
+            if (data.stats) {
+              setDashboardStats(data.stats);
+            }
+          })
+          .catch(err => console.error("Error fetching insights:", err))
+          .finally(() => setIsLoadingStats(false));
+      }, [activeTable, currentScreen]);
+
+      const fetchAnalysis = React.useCallback((table) => {
+        if (!table) return;
+        setIsAnalyzing(true);
+        setDatasetAnalysis(null);
+        fetch('/api/analyze-dataset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ table_name: table })
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data) {
+            setDatasetAnalysis(data);
+          }
+        })
+        .catch(err => console.error("Error fetching analysis:", err))
+        .finally(() => setIsAnalyzing(false));
+      }, []);
+
+      React.useEffect(() => {
+        if (currentScreen === 'dashboard') {
+          fetchSchema();
+        }
+      }, [currentScreen]); // intentionally without fetchSchema in deps to run once
+
+      React.useEffect(() => {
+        if (currentScreen === 'dashboard' && activeTable) {
+          fetchInsights(activeTable);
+          fetchAnalysis(activeTable);
+        }
+      }, [activeTable, currentScreen, fetchInsights, fetchAnalysis]);
+
+      if (currentScreen === 'login') {
+        return (
+          <div className="flex flex-col min-h-screen">
+            <LoginScreen onLogin={() => setCurrentScreen('dashboard')} />
+            <Footer />
+          </div>
+        );
+      }
+      
+      if (currentScreen === 'docs') {
+        return <DocumentationScreen onNavigateBack={() => setCurrentScreen('dashboard')} />;
+      }
 
       // Dummy HR Data Icons
       const icons = {
@@ -346,14 +1324,46 @@
             <div className="max-w-7xl mx-auto flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg">
-                  <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                  <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012-2h-2a2 2 0 01-2-2z" /></svg>
                 </div>
                 <div>
                   <h1 className="text-xl font-bold tracking-tight">HR Analytics Dashboard</h1>
-                  <p className="text-xs text-gray-400 font-medium mt-0.5">Global Organization Overview</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <p className="text-xs text-gray-400 font-medium">Active Dataset:</p>
+                    <select 
+                      value={activeTable}
+                      onChange={e => setActiveTable(e.target.value)}
+                      disabled={isLoadingSchema || Object.keys(schema).length === 0}
+                      className="text-xs bg-gray-900 border border-white/10 rounded px-2 py-1 text-gray-100 focus:outline-none focus:border-indigo-500/50 cursor-pointer disabled:opacity-50"
+                    >
+                      {isLoadingSchema ? (
+                        <option>Loading...</option>
+                      ) : Object.keys(schema).length === 0 ? (
+                        <option>No Datasets</option>
+                      ) : (
+                        Object.keys(schema).map(table => (
+                          <option key={table} value={table}>{table}</option>
+                        ))
+                      )}
+                    </select>
+                  </div>
                 </div>
               </div>
-              <div className="hidden sm:flex items-center gap-3">
+              <div className="hidden sm:flex items-center gap-4">
+                <button 
+                  onClick={() => setCurrentScreen('docs')}
+                  className="text-xs font-bold px-3 py-1.5 text-indigo-300 hover:text-indigo-200 transition-colors flex items-center gap-1.5 hover:bg-white/5 rounded-lg"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                  Docs
+                </button>
+                <button 
+                  onClick={() => setShowDataModal(true)}
+                  className="text-xs font-bold px-3 py-1.5 bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-lg transition-colors border border-indigo-500/30 flex items-center gap-1"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                  Connect Data
+                </button>
                 <div className="text-right">
                   <p className="text-sm font-semibold text-gray-200">Jane Doe</p>
                   <p className="text-xs text-gray-500">CHRO</p>
@@ -367,34 +1377,105 @@
           <main className="flex-1 overflow-y-auto px-6 md:px-10 py-8">
             <div className="max-w-7xl mx-auto space-y-8 pb-24">
               
-              {/* Stat Cards Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                <StatCard title="Total Employees" value="1,248" icon={icons.users} trend="12% from last year" positive={true} />
-                <StatCard title="Open Roles" value="42" icon={icons.briefcase} trend="5% from last month" positive={false} />
-                <StatCard title="Attrition Rate" value="4.2%" icon={icons.trending} trend="0.8% from last quarter" positive={true} />
-                <StatCard title="Avg. Salary" value="$84,500" icon={icons.cash} trend="2.4% adjustment applied" positive={true} />
-              </div>
+              {(!activeTable && !isLoadingSchema) ? (
+                <div className="flex flex-col items-center justify-center py-16 md:py-32 animate-fade-in-up text-center">
+                  <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-indigo-500/20 to-purple-600/20 flex items-center justify-center mb-8 border border-indigo-500/30 shadow-[0_0_60px_rgba(79,70,229,0.3)] relative">
+                     <div className="absolute inset-0 rounded-full animate-ping bg-indigo-500/10"></div>
+                     <svg className="w-12 h-12 text-indigo-400 relative z-10" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                  </div>
+                  
+                  <h2 className="text-4xl md:text-5xl font-bold text-white mb-6 tracking-tight">
+                    Welcome to <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-purple-400">DataLens</span>
+                  </h2>
+                  <p className="text-gray-400 max-w-xl text-lg mb-10 leading-relaxed">
+                    Your AI-powered executive analytics platform. Connect a database or upload a file to instantly generate intelligent insights, health scores, and dynamic charts.
+                  </p>
+                  
+                  <div className="flex flex-col sm:flex-row gap-5">
+                    <button 
+                      onClick={() => setShowDataModal(true)}
+                      className="px-8 py-4 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl font-bold text-white shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40 hover:-translate-y-1 transition-all flex items-center justify-center gap-3 text-lg"
+                    >
+                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+                      Connect Your Data
+                    </button>
+                    
+                    <button 
+                      onClick={() => setCurrentScreen('docs')}
+                      className="px-8 py-4 glass rounded-2xl font-bold text-gray-300 border border-white/10 hover:bg-white/5 transition-all flex items-center justify-center gap-3 text-lg hover:-translate-y-1 hover:border-indigo-500/50 group"
+                    >
+                      <svg className="w-6 h-6 text-indigo-400 group-hover:text-indigo-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+                      Read Documentation
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Executive Banner */}
+                  <ExecutiveIntelligenceBanner 
+                    analysis={datasetAnalysis} 
+                    onQueryClick={setChatAutoQuery} 
+                  />
 
-              {/* Charts Area */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 glass rounded-2xl p-6 border border-white/5 shadow-xl h-[400px] flex flex-col items-center justify-center text-center">
-                  <svg className="w-16 h-16 text-indigo-500/30 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-                  <h3 className="text-lg font-bold text-gray-300">Headcount Over Time</h3>
-                  <p className="text-sm text-gray-500 mt-2 max-w-sm">Open the DataLens AI Tutor in the bottom right corner to generate dynamic charts from your database!</p>
-                </div>
-                
-                <div className="glass rounded-2xl p-6 border border-white/5 shadow-xl h-[400px] flex flex-col items-center justify-center text-center">
-                  <svg className="w-16 h-16 text-purple-500/30 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" /></svg>
-                  <h3 className="text-lg font-bold text-gray-300">Department Breakdown</h3>
-                  <p className="text-sm text-gray-500 mt-2">Ask DataLens to visualize employee distribution.</p>
-                </div>
-              </div>
+                  {/* Stat Cards Grid */}
+                  <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-100">Top Indicators</h2>
+                      <p className="text-xs text-gray-400 mt-1">AI-generated metrics {activeTable ? `for ${activeTable}` : ''}</p>
+                    </div>
+                    <button 
+                      onClick={() => fetchInsights(activeTable)} 
+                      disabled={isLoadingStats} 
+                      className="text-xs font-semibold px-4 py-2 bg-indigo-500 hover:bg-indigo-400 rounded-lg text-white transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <svg className={`w-4 h-4 ${isLoadingStats ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                      {isLoadingStats ? 'Analyzing...' : 'Refresh Indicators'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                    {isLoadingStats ? (
+                      Array(4).fill(0).map((_, i) => (
+                        <div key={i} className="glass rounded-2xl p-6 border border-white/5 shadow-xl animate-pulse h-32 flex flex-col justify-between">
+                          <div className="h-4 bg-white/10 rounded w-1/2"></div>
+                          <div className="h-8 bg-white/10 rounded w-3/4"></div>
+                          <div className="h-3 bg-white/10 rounded w-1/3"></div>
+                        </div>
+                      ))
+                    ) : dashboardStats.length > 0 ? (
+                      dashboardStats.map((stat, i) => (
+                        <StatCard 
+                          key={i} 
+                          title={stat.title} 
+                          value={stat.value} 
+                          icon={icons[stat.icon] || icons.trending} 
+                          trend={stat.trend} 
+                          positive={stat.positive} 
+                        />
+                      ))
+                    ) : (
+                      <>
+                        <StatCard title="Total Records" value="--" icon={icons.users} trend="Waiting for data" positive={true} />
+                        <StatCard title="Key Metric 1" value="--" icon={icons.briefcase} trend="Waiting for data" positive={false} />
+                        <StatCard title="Key Metric 2" value="--" icon={icons.trending} trend="Waiting for data" positive={true} />
+                        <StatCard title="Key Metric 3" value="--" icon={icons.cash} trend="Waiting for data" positive={true} />
+                      </>
+                    )}
+                  </div>
+
+                  {/* Charts Area */}
+                  <ChartBuilder schema={schema} activeTable={activeTable} />
+                </>
+              )}
             </div>
+            <Footer />
           </main>
 
           {/* Floating Chat Widget */}
-          <ChatWidget onMaximize={setModalContent} />
-
+          <ChatWidget 
+            onMaximize={setModalContent} 
+            autoQuery={chatAutoQuery}
+            setAutoQuery={setChatAutoQuery}
+          />
           {/* ─── Chart Modal ────────────────────────────── */}
           {modalContent && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 md:p-8 animate-fade-in-up" style={{ animationDuration: '0.2s' }} onClick={() => setModalContent(null)}>
@@ -413,6 +1494,21 @@
                 <div 
                   className="w-full flex-1 flex items-center justify-center [&>svg]:!w-full [&>svg]:!h-auto [&>svg]:!max-w-full [&>svg]:max-h-[75vh]" 
                   dangerouslySetInnerHTML={{ __html: modalContent }} 
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ─── Data Connect Modal ───────────────────────── */}
+          {showDataModal && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 md:p-8 animate-fade-in-up" style={{ animationDuration: '0.2s' }}>
+              <div className="bg-gray-950 border border-white/10 rounded-2xl shadow-2xl w-full max-w-6xl max-h-full overflow-y-auto relative flex flex-col">
+                <IngestionHub 
+                  onClose={() => setShowDataModal(false)}
+                  onComplete={() => {
+                    setShowDataModal(false);
+                    fetchSchema();
+                  }} 
                 />
               </div>
             </div>
