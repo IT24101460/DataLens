@@ -129,7 +129,7 @@ async def favicon():
     return Response(status_code=204)
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
+def chat(request: ChatRequest):
     if not agent:
         raise HTTPException(status_code=500, detail="Database agent not initialized")
     config = {"configurable": {"thread_id": "1"}}
@@ -154,7 +154,7 @@ class AnalyzeRequest(BaseModel):
     table_name: str
 
 @app.get("/api/insights")
-async def get_insights(table: str = None):
+def get_insights(table: str = None):
     global ACTIVE_DB_URI, agent
     if not agent:
         raise HTTPException(status_code=500, detail="Database agent not initialized")
@@ -199,7 +199,7 @@ async def get_insights(table: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/analyze-dataset")
-async def analyze_dataset(request: AnalyzeRequest):
+def analyze_dataset(request: AnalyzeRequest):
     global ACTIVE_DB_URI, agent
     if not ACTIVE_DB_URI:
         raise HTTPException(status_code=500, detail="Database not connected")
@@ -324,7 +324,7 @@ async def analyze_dataset(request: AnalyzeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/connect-spreadsheet")
-async def connect_spreadsheet(request: SpreadsheetRequest):
+def connect_spreadsheet(request: SpreadsheetRequest):
     global ACTIVE_DB_URI
     try:
         match = re.search(r'/d/([a-zA-Z0-9-_]+)', request.url)
@@ -362,7 +362,7 @@ async def connect_spreadsheet(request: SpreadsheetRequest):
         raise HTTPException(status_code=400, detail=f"Spreadsheet connection failed: {str(e)}")
 
 @app.post("/api/connect")
-async def connect_db(request: ConnectRequest):
+def connect_db(request: ConnectRequest):
     global ACTIVE_DB_URI
     try:
         from sqlalchemy import create_engine
@@ -376,7 +376,7 @@ async def connect_db(request: ConnectRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/connect-custom-db")
-async def connect_custom_db(request: CustomDBRequest):
+def connect_custom_db(request: CustomDBRequest):
     global ACTIVE_DB_URI
     
     if request.db_type.lower() == "postgresql":
@@ -408,7 +408,7 @@ async def connect_custom_db(request: CustomDBRequest):
         raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+def upload_file(file: UploadFile = File(...)):
     global ACTIVE_DB_URI
     try:
         file_location = f"uploaded_{file.filename}"
@@ -441,7 +441,9 @@ async def upload_file(file: UploadFile = File(...)):
             
         engine = create_engine(database_url)
         table_name = file.filename.split('.')[0].replace(" ", "_").replace("-", "_").lower()
-        df.to_sql(table_name, engine, if_exists="replace", index=False)
+        
+        # Use chunksize to prevent memory explosions or timeout on large files
+        df.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=1000)
         
         ACTIVE_DB_URI = database_url
         initialize_agent(ACTIVE_DB_URI)
@@ -455,7 +457,7 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/schema")
-async def get_schema():
+def get_schema():
     global ACTIVE_DB_URI
     if not ACTIVE_DB_URI:
         return {}
