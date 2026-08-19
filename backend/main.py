@@ -1,7 +1,11 @@
 import os
 import re
 import warnings
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass # In production (Railway), env vars are injected directly, so dotenv isn't strictly required
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
