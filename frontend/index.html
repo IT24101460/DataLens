@@ -96,6 +96,11 @@
   <script type="text/babel">
     const { useState, useRef, useEffect } = React;
 
+    // ⚠️ CRITICAL: Replace the URL below with your actual Railway app URL (e.g., 'https://datalens-backend.up.railway.app')
+    const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+      ? 'http://localhost:8080' 
+      : 'https://datalens-production-537b.up.railway.app'; // <-- Connected to Railway!
+
     /* ─── Typing indicator ───────────────────────────────── */
     function TypingIndicator() {
       return (
@@ -248,7 +253,7 @@
         setIsLoading(true);
 
         try {
-          const response = await fetch('/chat', {
+          const response = await fetch(API_BASE_URL + '/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ user_message: userMessage }),
@@ -387,7 +392,7 @@
         prompt += ' CRITICAL: You MUST LIMIT your output to a maximum of 15 data points. If the x-axis represents dates or times, DO NOT just return the top 15 dates. You MUST aggregate and group the data temporally (e.g., by month or year) and order it chronologically so it represents the full timeline within the 15 data point limit! Do NOT output more than 15 items in the x-axis or y-axis arrays, otherwise the chart will crash! Do not include a theme init block or multiple colors in your prompt, I will handle colors. Just return the valid markdown code block.';
 
         try {
-          const response = await fetch('/chat', {
+          const response = await fetch(API_BASE_URL + '/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ user_message: prompt }),
@@ -749,7 +754,7 @@
         setValidating('db');
         setError(null);
         try {
-          const res = await fetch('/api/connect', {
+          const res = await fetch(API_BASE_URL + '/api/connect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ db_url: dbUrl })
@@ -777,7 +782,7 @@
         formData.append('file', file);
         
         try {
-          const res = await fetch('/api/upload', {
+          const res = await fetch(API_BASE_URL + '/api/upload', {
             method: 'POST',
             body: formData
           });
@@ -1338,7 +1343,7 @@
 
       const fetchSchema = React.useCallback(() => {
         setIsLoadingSchema(true);
-        fetch('/api/schema')
+        fetch(API_BASE_URL + '/api/schema')
           .then(res => res.json())
           .then(data => {
             setSchema(data);
@@ -1374,7 +1379,7 @@
         if (!table) return;
         setIsAnalyzing(true);
         setDatasetAnalysis(null);
-        fetch('/api/analyze-dataset', {
+        fetch(API_BASE_URL + '/api/analyze-dataset', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ table_name: table })
