@@ -112,11 +112,10 @@ if ACTIVE_DB_URI:
 class ChatRequest(BaseModel):
     user_message: str
 
-# Serve the frontend
-@app.get("/", response_class=HTMLResponse)
+# API Root / Healthcheck
+@app.get("/")
 async def root():
-    html_path = Path(__file__).parent / "static" / "index.html"
-    return html_path.read_text(encoding="utf-8")
+    return {"message": "DataLens API is running", "status": "ok"}
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
