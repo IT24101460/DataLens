@@ -14,6 +14,16 @@ import pandas as pd
 # Suppress the langchain-community deprecation warning
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*langchain-community.*")
 
+# Auto-install psycopg2-binary for Supabase if missing
+try:
+    import psycopg2
+except ImportError:
+    import subprocess
+    import sys
+    print("Auto-installing psycopg2-binary into current environment...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "psycopg2-binary"])
+    import psycopg2
+
 from langchain_community.utilities import SQLDatabase
 from langchain_openai import ChatOpenAI
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
@@ -320,14 +330,18 @@ async def connect_spreadsheet(request: SpreadsheetRequest):
         
         df = pd.read_csv(csv_export_url)
         
-        import sqlite3
-        db_path = "uploaded_data.db"
-        table_name = f"sheet_{sheet_id[:8]}"
-        conn = sqlite3.connect(db_path)
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
-        conn.close()
+        import os
+        from sqlalchemy import create_engine
         
-        ACTIVE_DB_URI = f"sqlite:///{db_path}"
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise Exception("DATABASE_URL environment variable is missing")
+            
+        engine = create_engine(database_url)
+        table_name = f"sheet_{sheet_id[:8]}"
+        df.to_sql(table_name, engine, if_exists="replace", index=False)
+        
+        ACTIVE_DB_URI = database_url
         initialize_agent(ACTIVE_DB_URI)
         
         from sqlalchemy import create_engine, inspect
@@ -413,15 +427,24 @@ async def upload_file(file: UploadFile = File(...)):
         else:
             raise Exception("Unsupported format. Use .csv or .xlsx")
             
-        import sqlite3
-        db_path = "uploaded_data.db"
-        table_name = file.filename.split('.')[0].replace(" ", "_").replace("-", "_").lower()
-        conn = sqlite3.connect(db_path)
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
-        conn.close()
+        import os
+        from sqlalchemy import create_engine
         
-        ACTIVE_DB_URI = f"sqlite:///{db_path}"
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise Exception("DATABASE_URL environment variable is missing")
+            
+        engine = create_engine(database_url)
+        table_name = file.filename.split('.')[0].replace(" ", "_").replace("-", "_").lower()
+        df.to_sql(table_name, engine, if_exists="replace", index=False)
+        
+        ACTIVE_DB_URI = database_url
         initialize_agent(ACTIVE_DB_URI)
+        
+        # Clean up the temporary local file
+        if os.path.exists(file_location):
+            os.remove(file_location)
+            
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
