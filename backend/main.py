@@ -176,7 +176,8 @@ def get_insights(table: str = None):
     - "positive": a boolean true or false indicating if this is a good thing.
     """
     try:
-        config = {"configurable": {"thread_id": "insights"}}
+        import uuid
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
         response = agent.invoke({"messages": [("user", prompt)]}, config)
         reply = response["messages"][-1].content
         
@@ -298,7 +299,8 @@ def analyze_dataset(request: AnalyzeRequest):
         """
         
         # Invoke Agent
-        config = {"configurable": {"thread_id": "analyze"}}
+        import uuid
+        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
         response = agent.invoke({"messages": [("user", prompt)]}, config)
         reply = response["messages"][-1].content
         
@@ -442,8 +444,8 @@ def upload_file(file: UploadFile = File(...)):
         engine = create_engine(database_url)
         table_name = file.filename.split('.')[0].replace(" ", "_").replace("-", "_").lower()
         
-        # Use chunksize to prevent memory explosions or timeout on large files
-        df.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=1000)
+        # Use chunksize and method='multi' to make PostgreSQL inserts exponentially faster
+        df.to_sql(table_name, engine, if_exists="replace", index=False, chunksize=1000, method='multi')
         
         ACTIVE_DB_URI = database_url
         initialize_agent(ACTIVE_DB_URI)
