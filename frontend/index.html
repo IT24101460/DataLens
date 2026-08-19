@@ -1363,7 +1363,7 @@
       const fetchInsights = React.useCallback((table = activeTable) => {
         if (currentScreen !== 'dashboard') return;
         setIsLoadingStats(true);
-        const url = table ? `/api/insights?table=${table}` : '/api/insights';
+        const url = table ? `${API_BASE_URL}/api/insights?table=${table}` : `${API_BASE_URL}/api/insights`;
         fetch(url)
           .then(res => res.json())
           .then(data => {
