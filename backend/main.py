@@ -34,8 +34,7 @@ from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 
-# Load environment variables
-load_dotenv()
+# Environment variables are loaded at the top of the file
 
 # Initialize FastAPI app
 app = FastAPI(title="DataLens API")
