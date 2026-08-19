@@ -746,8 +746,9 @@
     function IngestionHub({ onComplete, onClose }) {
       const [validating, setValidating] = useState(null); 
       const [dbUrl, setDbUrl] = useState('');
-      const [error, setError] = useState(null);
-      const fileInputRef = useRef(null);
+      const [error, setError] = React.useState(null);
+      const [uploadProgress, setUploadProgress] = React.useState(0);
+      const fileInputRef = React.useRef(null);
 
       const handleConnectDB = async () => {
         if (!dbUrl) return;
@@ -772,31 +773,46 @@
         }
       };
 
-      const handleFileUpload = async (e) => {
+      const handleFileUpload = (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
         setValidating('file');
         setError(null);
+        setUploadProgress(0);
         
         const formData = new FormData();
         formData.append('file', file);
         
-        try {
-          const res = await fetch(API_BASE_URL + '/api/upload', {
-            method: 'POST',
-            body: formData
-          });
-          const data = await res.json();
-          if (res.ok) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', API_BASE_URL + '/api/upload', true);
+        
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(percentComplete);
+          }
+        };
+        
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
             onComplete();
           } else {
-            setError(data.detail || 'Upload failed');
+            try {
+              const data = JSON.parse(xhr.responseText);
+              setError(data.detail || 'Upload failed');
+            } catch (err) {
+              setError('Upload failed with status ' + xhr.status);
+            }
             setValidating(null);
           }
-        } catch (err) {
-          setError(err.message);
+        };
+        
+        xhr.onerror = () => {
+          setError('Network error or CORS policy blocked the request.');
           setValidating(null);
-        }
+        };
+        
+        xhr.send(formData);
       };
 
       const handleSheets = () => {
@@ -870,8 +886,13 @@
                   <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Drag & drop files here</p>
                   <p className="text-xs text-gray-500 mt-1">or click to browse</p>
                 </div>
-                <button onClick={() => fileInputRef.current?.click()} disabled={!!validating} className="w-full py-2.5 bg-indigo-500 hover:bg-indigo-400 text-gray-900 dark:text-white rounded-xl text-sm font-semibold transition-colors flex items-center justify-center disabled:opacity-50">
-                  {validating === 'file' ? 'Uploading...' : 'Browse Computer'}
+                <button onClick={() => fileInputRef.current?.click()} disabled={!!validating} className="w-full py-2.5 bg-indigo-500 hover:bg-indigo-400 text-gray-900 dark:text-white rounded-xl text-sm font-semibold transition-colors flex items-center justify-center disabled:opacity-50 relative overflow-hidden">
+                  {validating === 'file' && (
+                    <div className="absolute left-0 top-0 bottom-0 bg-indigo-600/30 transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                  )}
+                  <span className="relative z-10">
+                    {validating === 'file' ? `Uploading... ${uploadProgress}%` : 'Browse Computer'}
+                  </span>
                 </button>
               </div>
 
